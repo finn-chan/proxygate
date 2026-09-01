@@ -57,7 +57,23 @@ docker run --rm -p 8080:8080 -p 1080:1080 -v proxygate-data:/data proxygate
 
 The container stores its generated configuration and SQLite database in `/data`. The listen addresses and database path can be overridden with `PROXYGATE_WEB_LISTEN_ADDRESS`, `PROXYGATE_SOCKS5_LISTEN_ADDRESS`, and `PROXYGATE_DATABASE_PATH`.
 
-Tags such as `v0.1.0` produce GitHub release archives and a multi-platform image in the repository's GHCR package. Pre-release tags such as `v0.1.0-rc.1` are marked accordingly and do not overwrite `latest`.
+GitHub Actions verifies that the multi-platform image builds on every pull request targeting `main`. A push to `main` publishes `ghcr.io/<owner>/<repository>:edge`, plus an immutable `sha-<commit>` tag. Tags such as `v0.1.0` produce GitHub release archives and publish the following GHCR tags:
+
+- `v0.1.0`
+- `0.1.0`
+- `0.1`
+- `latest`
+- `sha-<commit>`
+
+Pre-release tags such as `v0.1.0-rc.1` are marked as GitHub pre-releases and do not overwrite `latest` or the stable minor tag. The Docker workflow can also be started manually with a custom image tag and embedded version.
+
+The published image supports `linux/386`, `linux/amd64`, `linux/arm/v6`, `linux/arm/v7`, `linux/arm64`, `linux/ppc64le`, `linux/riscv64`, and `linux/s390x`. To run the latest development image:
+
+```sh
+docker pull ghcr.io/<owner>/<repository>:edge
+docker run --rm -p 8080:8080 -p 1080:1080 \
+  -v proxygate-data:/data ghcr.io/<owner>/<repository>:edge
+```
 
 ## Configuration
 
