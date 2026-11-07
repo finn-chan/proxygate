@@ -37,6 +37,7 @@ type Config struct {
 	FilterExpression       string   `json:"filterExpression"`
 	SelectionMode          string   `json:"selectionMode"`
 	FollowRankingOnRefresh bool     `json:"followRankingOnRefresh"`
+	FallbackToDirect       bool     `json:"fallbackToDirect"`
 	SOCKS5                 SOCKS5   `json:"socks5"`
 	Monitor                Monitor  `json:"monitor"`
 	Web                    Web      `json:"web"`
@@ -52,9 +53,25 @@ type Config struct {
 }
 
 type SOCKS5 struct {
-	ListenAddress string `json:"listenAddress"`
-	Username      string `json:"username"`
-	Password      string `json:"password"`
+	ListenAddress    string `json:"listenAddress"`
+	Username         string `json:"username"`
+	Password         string `json:"password"`
+	IdleTimeout      string `json:"idleTimeout"`
+	HalfCloseTimeout string `json:"halfCloseTimeout"`
+}
+
+func (s SOCKS5) IdleTimeoutDuration() (time.Duration, error) {
+	if s.IdleTimeout == "" {
+		return 5 * time.Minute, nil
+	}
+	return positiveDuration(s.IdleTimeout)
+}
+
+func (s SOCKS5) HalfCloseTimeoutDuration() (time.Duration, error) {
+	if s.HalfCloseTimeout == "" {
+		return time.Minute, nil
+	}
+	return positiveDuration(s.HalfCloseTimeout)
 }
 
 type Monitor struct {
@@ -83,8 +100,8 @@ func defaultConfig() (Config, string) {
 	}
 	return Config{
 		SourceURL: DefaultSourceURL, RefreshInterval: "30m", FilterExpression: "true",
-		SelectionMode: "speed", FollowRankingOnRefresh: true,
-		SOCKS5:       SOCKS5{ListenAddress: "127.0.0.1:1080"},
+		SelectionMode: "speed", FollowRankingOnRefresh: true, FallbackToDirect: false,
+		SOCKS5:       SOCKS5{ListenAddress: "127.0.0.1:1080", IdleTimeout: "5m", HalfCloseTimeout: "1m"},
 		Monitor:      Monitor{URL: "https://www.google.com/generate_204", Interval: "30s", Timeout: "10s"},
 		Web:          Web{ListenAddress: "127.0.0.1:8080", Username: "admin", PasswordHash: string(hash), SessionSecret: randomSecret()},
 		DatabasePath: "data/proxygate.db", ConnectTimeout: "15s",
@@ -112,6 +129,12 @@ func (c Config) Validate() error {
 	}
 	if len(c.SOCKS5.Username) > 255 || len(c.SOCKS5.Password) > 255 {
 		return errors.New("socks5 username and password must not exceed 255 bytes")
+	}
+	if _, err := c.SOCKS5.IdleTimeoutDuration(); err != nil {
+		return fmt.Errorf("socks5.idleTimeout: %w", err)
+	}
+	if _, err := c.SOCKS5.HalfCloseTimeoutDuration(); err != nil {
+		return fmt.Errorf("socks5.halfCloseTimeout: %w", err)
 	}
 	if err := validateAddress("web.listenAddress", c.Web.ListenAddress); err != nil {
 		return err

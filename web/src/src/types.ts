@@ -22,6 +22,8 @@ export interface Node {
 export interface Status {
   state: string
   selection: 'auto' | 'manual'
+  directMode: boolean
+  connectionPaused: boolean
   activeIp?: string
   activeHostName?: string
   activeProtocol?: Protocol
@@ -50,7 +52,8 @@ export interface Config {
   filterExpression: string
   selectionMode: 'speed' | 'ping' | 'score'
   followRankingOnRefresh: boolean
-  socks5: { listenAddress: string; username: string; password: string }
+  fallbackToDirect: boolean
+  socks5: { listenAddress: string; username: string; password: string; idleTimeout: string; halfCloseTimeout: string }
   monitor: { url: string; interval: string; timeout: string }
   web: { listenAddress: string; username: string; passwordHash: string; sessionSecret: string }
   databasePath: string

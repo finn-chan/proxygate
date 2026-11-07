@@ -140,6 +140,7 @@ function Nodes() {
   const [page, setPage] = useState(1)
   const [loadingNodes, setLoadingNodes] = useState(true)
   const [reconnecting, setReconnecting] = useState(false)
+  const [switchingDirect, setSwitchingDirect] = useState(false)
   const [lastSynced, setLastSynced] = useState<Date>()
   const statusRequest = useRef(false)
   const nodesRequest = useRef(false)
@@ -254,7 +255,8 @@ function Nodes() {
   const pageCount = Math.max(1, Math.ceil(filteredNodes.length / pageSize))
   const currentPage = Math.min(page, pageCount)
   const visibleNodes = filteredNodes.slice((currentPage - 1) * pageSize, currentPage * pageSize)
-  const connected = status?.state === 'connected'
+  const connected = status?.state === 'connected' && !status?.directMode
+  const directMode = Boolean(status?.directMode)
 
   const refresh = async () => {
     try {
@@ -279,12 +281,30 @@ function Nodes() {
     }
   }
 
+  const toggleDirect = async () => {
+    if (!status) return
+    setError(''); setSwitchingDirect(true)
+    const enabled = !status.connectionPaused
+    try {
+      await api.post('/api/connection/direct', { enabled })
+      setStatus(current => current ? enabled
+        ? { ...current, state: 'direct', directMode: true, connectionPaused: true, activeIp: undefined, activeHostName: undefined, activeProtocol: undefined, connectingIp: undefined }
+        : { ...current, state: 'connecting', connectionPaused: false }
+        : current)
+      await loadStatus()
+    } catch (reason) {
+      setError(errorMessage(reason))
+    } finally {
+      setSwitchingDirect(false)
+    }
+  }
+
   return <div className="page-stack">
     <header className="page-heading">
       <div><p className="eyebrow">{t('nodes.eyebrow')}</p><h1>{t('nodes.heading')}</h1><p>{t('nodes.description')}</p></div>
       <div className="heading-actions">
         <span className="sync-label">{t('nodes.synced', { time: formatRelativeTime(lastSynced, t) })}</span>
-        <button className="secondary-button" disabled={!status?.activeIp || status.state === 'connecting' || reconnecting} onClick={reconnect}>{reconnecting ? <Spinner /> : <RestartIcon />}{reconnecting ? t('nodes.reconnecting') : t('nodes.reconnectCurrent')}</button>
+        <button className="secondary-button" disabled={!status?.activeIp || status.state === 'connecting' || reconnecting || switchingDirect} onClick={reconnect}>{reconnecting ? <Spinner /> : <RestartIcon />}{reconnecting ? t('nodes.reconnecting') : t('nodes.reconnectCurrent')}</button>
         <button className="primary-button" disabled={status?.refreshRunning} onClick={refresh}>{status?.refreshRunning ? <Spinner /> : <RefreshIcon />}{status?.refreshRunning ? t('nodes.refreshing') : t('nodes.refreshSource')}</button>
       </div>
     </header>
@@ -293,12 +313,12 @@ function Nodes() {
     {status?.lastError && <Notice tone="warning"><strong>{t('nodes.lastError')}</strong><span>{status.lastError}</span></Notice>}
 
     <section className="status-grid">
-      <article className={`status-card connection ${connected ? 'healthy' : status?.state === 'connecting' ? 'pending' : 'unhealthy'}`}>
+      <article className={`status-card connection ${connected ? 'healthy' : directMode || status?.state === 'connecting' ? 'pending' : 'unhealthy'}`}>
         <div className="status-card-head"><span>{t('status.connection')}</span><i /></div>
-        <strong>{stateLabel(status?.state, t)}</strong>
-        <p>{status?.selection === 'manual' ? t('status.manual') : t('status.automatic')}</p>
+        <div className="status-state-row"><strong>{directMode ? t('status.direct') : stateLabel(status?.state, t)}</strong><button className={status?.connectionPaused ? 'resume' : 'direct'} disabled={!status || switchingDirect} onClick={toggleDirect}>{switchingDirect ? <Spinner /> : status?.connectionPaused ? <RestartIcon /> : null}{switchingDirect ? t('nodes.switchingConnection') : status?.connectionPaused ? t('nodes.resumeConnection') : directMode ? t('nodes.pauseReconnect') : t('nodes.enableDirect')}</button></div>
+        <p>{directMode ? status?.connectionPaused ? t('status.directPaused') : t('status.directFallback') : status?.selection === 'manual' ? t('status.manual') : t('status.automatic')}</p>
       </article>
-      <article className="status-card"><div className="status-card-head"><span>{t('status.currentExit')}</span><small>{status?.activeProtocol ? protocolLabels[status.activeProtocol] : '—'}</small></div><strong className="mono compact">{status?.activeIp || t('status.notConnected')}</strong><p>{status?.activeHostName || t('status.waiting')}</p></article>
+      <article className="status-card"><div className="status-card-head"><span>{t('status.currentExit')}</span><small>{status?.activeProtocol ? protocolLabels[status.activeProtocol] : '—'}</small></div><strong className="mono compact">{directMode ? t('status.localNetwork') : status?.activeIp || t('status.notConnected')}</strong><p>{directMode ? t('status.localNetworkHint') : status?.activeHostName || t('status.waiting')}</p></article>
       <article className="status-card"><div className="status-card-head"><span>{t('status.healthCheck')}</span><small>{status?.lastError ? t('status.unhealthy') : t('status.healthy')}</small></div><strong className="compact">{formatRelativeTime(status?.lastHealthCheck, t)}</strong><p>{status?.lastHealthCheck ? formatDateTime(status.lastHealthCheck, locale) : t('status.notChecked')}</p></article>
       <article className="status-card"><div className="status-card-head"><span>{t('status.nodeCount')}</span><small>{t('status.filtered')}</small></div><strong>{nodes.length}</strong><p>{t('status.showing', { count: filteredNodes.length })}</p></article>
     </section>
@@ -327,10 +347,13 @@ const NodeCard = memo(function NodeCard({ node, protocolPriority, active, active
   const { t, i18n } = useTranslation()
   const locale = resolvedLocale(i18n.resolvedLanguage)
   const [testing, setTesting] = useState(false)
+  const [startingTest, setStartingTest] = useState(false)
+  const [cancelingTest, setCancelingTest] = useState(false)
   const [connectionError, setConnectionError] = useState('')
   const [speedTestError, setSpeedTestError] = useState('')
   const [selecting, setSelecting] = useState(false)
   const [selectedProtocol, setSelectedProtocol] = useState<Protocol | ''>(activeProtocol || '')
+  const speedTestRun = useRef(0)
   const availableProtocols = useMemo(() => orderedProtocols(node.protocols, protocolPriority), [node.protocols, protocolPriority])
 
   useEffect(() => {
@@ -350,19 +373,42 @@ const NodeCard = memo(function NodeCard({ node, protocolPriority, active, active
   }
 
   const test = async () => {
-    setSpeedTestError(''); setTesting(true)
+    const run = ++speedTestRun.current
+    setSpeedTestError(''); setTesting(true); setStartingTest(true)
     try {
       await api.post(`/api/nodes/${encodeURIComponent(node.ip)}/speed-test`)
-      while (true) {
+      if (speedTestRun.current !== run) return
+      setStartingTest(false)
+      while (speedTestRun.current === run) {
         await delay(1_500)
+        if (speedTestRun.current !== run) return
         const result = await api.get<{ state: string; error?: string }>(`/api/nodes/${encodeURIComponent(node.ip)}/speed-test`)
         if (result.state === 'failed') throw new Error(result.error || t('node.speedTestFailed'))
+        if (result.state === 'canceled') return
         if (result.state === 'complete') { await reloadNodes(); return }
       }
     } catch (reason) {
-      setSpeedTestError(errorMessage(reason))
+      if (speedTestRun.current === run) setSpeedTestError(errorMessage(reason))
     } finally {
+      if (speedTestRun.current === run) { setTesting(false); setStartingTest(false) }
+    }
+  }
+
+  const cancelTest = async () => {
+    const run = speedTestRun.current
+    setCancelingTest(true)
+    try {
+      const result = await api.delete<{ state: string; error?: string }>(`/api/nodes/${encodeURIComponent(node.ip)}/speed-test`)
+      if (speedTestRun.current !== run) return
+      speedTestRun.current++
+      if (result.state === 'complete') await reloadNodes()
+      setSpeedTestError(result.state === 'failed' ? result.error || t('node.speedTestFailed') : '')
       setTesting(false)
+      setStartingTest(false)
+    } catch (reason) {
+      if (speedTestRun.current === run) setSpeedTestError(errorMessage(reason))
+    } finally {
+      setCancelingTest(false)
     }
   }
 
@@ -380,7 +426,7 @@ const NodeCard = memo(function NodeCard({ node, protocolPriority, active, active
       <div><dt>{t('node.score')}</dt><dd>{formatNumber(node.score, locale)}</dd></div>
     </dl>
     <label className="connection-protocol"><span>{t('node.protocol')}</span><select value={selectedProtocol} disabled={connecting || selecting} onChange={event => { setSelectedProtocol(event.target.value as Protocol | ''); setConnectionError('') }}><option value="">{t('node.priority')}</option>{availableProtocols.map(protocol => <option value={protocol} key={protocol}>{protocolLabels[protocol]}</option>)}</select></label>
-    <div className="node-actions"><button className={`secondary-button ${connectionError ? 'error-tooltip' : ''}`} data-tooltip={connectionError || undefined} aria-label={connectionError ? t('node.connectFailedLabel', { error: connectionError }) : undefined} disabled={connecting || selecting} onClick={select}>{connecting || selecting ? <><Spinner />{t('node.connectingAction')}</> : connectionError ? t('node.connectFailed') : active ? selectedProtocol === '' ? t('node.reconnectPriority') : selectedProtocol === activeProtocol ? t('node.reconnect') : t('node.reconnectProtocol') : t('node.switch')}</button><button className="icon-button" title={t('node.speedTestTitle')} disabled={testing} onClick={test}>{testing ? <Spinner /> : <SpeedIcon />}<span>{testing ? t('node.testing') : t('node.speedTest')}</span></button></div>
+    <div className="node-actions"><button className={`secondary-button ${connectionError ? 'error-tooltip' : ''}`} data-tooltip={connectionError || undefined} aria-label={connectionError ? t('node.connectFailedLabel', { error: connectionError }) : undefined} disabled={connecting || selecting} onClick={select}>{connecting || selecting ? <><Spinner />{t('node.connectingAction')}</> : connectionError ? t('node.connectFailed') : active ? selectedProtocol === '' ? t('node.reconnectPriority') : selectedProtocol === activeProtocol ? t('node.reconnect') : t('node.reconnectProtocol') : t('node.switch')}</button><button className={`icon-button ${testing ? 'cancel-button' : ''}`} title={testing ? t('node.cancelSpeedTestTitle') : t('node.speedTestTitle')} disabled={startingTest || cancelingTest} onClick={testing ? cancelTest : test}>{startingTest || cancelingTest ? <Spinner /> : testing ? <StopIcon /> : <SpeedIcon />}<span>{cancelingTest ? t('node.cancelingTest') : startingTest ? t('node.testing') : testing ? t('node.cancelTest') : t('node.speedTest')}</span></button></div>
   </article>
 })
 
@@ -472,6 +518,7 @@ function Settings() {
       <Field label={t('settings.connectTimeout')} hint={t('settings.connectTimeoutHint')}><input value={settings.connectTimeout} onChange={event => update('connectTimeout', event.target.value)} /></Field>
       <Field label={t('settings.automaticSort')}><select value={settings.selectionMode} onChange={event => update('selectionMode', event.target.value as Config['selectionMode'])}><option value="speed">{t('settings.sortSpeed')}</option><option value="ping">{t('settings.sortPing')}</option><option value="score">{t('settings.sortScore')}</option></select></Field>
       <label className="toggle-field"><input type="checkbox" checked={settings.followRankingOnRefresh} onChange={event => update('followRankingOnRefresh', event.target.checked)} /><span><strong>{t('settings.followRanking')}</strong><small>{t('settings.followRankingHint')}</small></span></label>
+      <label className="toggle-field"><input type="checkbox" checked={settings.fallbackToDirect} onChange={event => update('fallbackToDirect', event.target.checked)} /><span><strong>{t('settings.fallbackToDirect')}</strong><small>{t('settings.fallbackToDirectHint')}</small></span></label>
       <Field label={t('settings.filter')} hint={t('settings.filterHint')} wide><textarea rows={6} spellCheck={false} value={settings.filterExpression} onChange={event => update('filterExpression', event.target.value)} /></Field>
       <FilterHelp />
     </SettingsSection>
@@ -485,6 +532,8 @@ function Settings() {
       <Field label={t('settings.listenAddress')}><input value={settings.socks5.listenAddress} onChange={event => update('socks5', { ...settings.socks5, listenAddress: event.target.value })} /></Field>
       <Field label={t('settings.username')} hint={t('settings.noAuthHint')}><input value={settings.socks5.username} onChange={event => update('socks5', { ...settings.socks5, username: event.target.value })} /></Field>
       <Field label={t('settings.password')}><input type="password" value={settings.socks5.password} onChange={event => update('socks5', { ...settings.socks5, password: event.target.value })} /></Field>
+      <Field label={t('settings.socksIdleTimeout')} hint={t('settings.socksIdleTimeoutHint')}><input placeholder="5m" value={settings.socks5.idleTimeout} onChange={event => update('socks5', { ...settings.socks5, idleTimeout: event.target.value })} /></Field>
+      <Field label={t('settings.socksHalfCloseTimeout')} hint={t('settings.socksHalfCloseTimeoutHint')}><input placeholder="1m" value={settings.socks5.halfCloseTimeout} onChange={event => update('socks5', { ...settings.socks5, halfCloseTimeout: event.target.value })} /></Field>
     </SettingsSection>
 
     <SettingsSection index="04" title={t('settings.probeTitle')} description={t('settings.probeDescription')}>
@@ -558,6 +607,7 @@ function RefreshIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><pat
 function RestartIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v6h6M20 20v-6h-6M5.5 15a8 8 0 0 0 13-3M18.5 9A8 8 0 0 0 5.5 6" /></svg> }
 function SearchIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg> }
 function SpeedIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17a8 8 0 1 1 16 0M12 17l4-6" /><path d="M7 17h10" /></svg> }
+function StopIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> }
 function ThemeIcon({ theme }: { theme: Theme }) { return theme === 'dark' ? <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z" /></svg> }
 
 function delay(milliseconds: number) { return new Promise(resolve => window.setTimeout(resolve, milliseconds)) }

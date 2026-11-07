@@ -96,6 +96,19 @@ func (s *Server) reconnectNode(c fiber.Ctx) error {
 	return writeJSON(c, fiber.StatusAccepted, map[string]bool{"ok": true})
 }
 
+func (s *Server) setDirectMode(c fiber.Ctx) error {
+	var input struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !decodeJSON(c, &input) {
+		return nil
+	}
+	if err := s.manager.SetDirectMode(c.Context(), input.Enabled); err != nil {
+		return writeError(c, fiber.StatusBadGateway, err.Error())
+	}
+	return writeJSON(c, fiber.StatusAccepted, map[string]bool{"ok": true})
+}
+
 func (s *Server) startSpeedTest(c fiber.Ctx) error {
 	result, err := s.speedTests.QueueManual(strings.Clone(c.Params("ip")))
 	if err != nil {
@@ -106,6 +119,18 @@ func (s *Server) startSpeedTest(c fiber.Ctx) error {
 		return writeError(c, status, err.Error())
 	}
 	return writeJSON(c, fiber.StatusAccepted, result)
+}
+
+func (s *Server) cancelSpeedTest(c fiber.Ctx) error {
+	result, err := s.speedTests.CancelManual(strings.Clone(c.Params("ip")))
+	if err != nil {
+		status := fiber.StatusConflict
+		if errors.Is(err, speedtest.ErrNotFound) {
+			status = fiber.StatusNotFound
+		}
+		return writeError(c, status, err.Error())
+	}
+	return writeJSON(c, fiber.StatusOK, result)
 }
 
 func (s *Server) speedTestStatus(c fiber.Ctx) error {
